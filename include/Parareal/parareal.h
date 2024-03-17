@@ -3,7 +3,8 @@
 
 #include "core.h"
 
-// Parareal Method.
+// Parareal Method. There are 2 different implementations of the Parareal method.
+// Naive and pipelined.
 inline int 
 parareal(ode_system &, time_stepper, time_stepper, int, Eigen::MatrixXd &);
 
