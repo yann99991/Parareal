@@ -3,44 +3,67 @@
 #include <omp.h>
 
 // Parareal Method.
+/**
+ * Performs the Parareal algorithm to solve an ODE system
+ *  using a naive approach.
+ * 
+ * @param sys The ODE system to solve.
+ * @param coarse The time stepper for the coarse solution.
+ * @param fine The time stepper for the fine solution.
+ * @param para_its The number of Parareal iterations.
+ * @param yf The matrix to store the solution at the different timestep.
+ * @return 0 if the algorithm completes successfully.
+ */
 inline int 
 parareal(ode_system &sys, time_stepper coarse, time_stepper fine, 
              int para_its, Eigen::MatrixXd &yf)
 {
-  int D = sys.dimension, csteps = sys.num_steps(coarse.dt);
+  int D = sys.dimension;                 // Dimension of the ODE system
+  int csteps = sys.num_steps(coarse.dt); // Number of coarse steps
+
   /* Serially compute the coarse solution to sys */
   coarse.integrate_allt(sys, yf);
+
   /* Initialize containers for parareal */
-  Eigen::MatrixXd ycourse = yf;
-  Eigen::MatrixXd yfine(csteps, D); yfine.row(0) = sys.y0;
+  Eigen::MatrixXd ycoarse = yf;
+  Eigen::MatrixXd yfine(csteps, D); 
+  yfine.row(0) = sys.y0;
+
+  /* Perform Parareal iterations, should be really while <max_iter or converged */
   for (int k = 0; k < para_its; k++)
   { // Begin Parareal Steps
+
     /* In parallel compute the fine iterates on top of the serial steps */
     #pragma omp parallel for
     for (int n = 0; n < csteps-1; n++)
     { 
-      /* Construct fine ODE */
+      /* Construct fine ODE from t_init+  [n,n+1] *dt */
       ode_system para = sys;
       para.t_init = sys.t_init + coarse.dt*n;
       para.t_final = sys.t_init + coarse.dt*(n+1);
       para.y0 = yf.row(n);
-      /* Solve and update yfine */
+
+      /* Solve and update the correction yfine */
       Eigen::VectorXd temp;
       fine.integrate(para, temp);
       yfine.row(n+1) = temp;
     }
+
+    /* Correct the coarse solution with the fine solution */
     for (int n = 0; n < csteps-1; n++)
     { // Predict w/ coarse operator, correct with fine.
+
       /* Construct predictor ODE system */
       ode_system para = sys;
-      para.t_init = sys.t_init + coarse.dt*n;
+      para.t_init = sys.t_init + coarse.dt*n; 
       para.t_final = sys.t_init + coarse.dt*(n+1);
       para.y0 = yf.row(n);
+
       /* Correct with parareal iterative scheme */
       Eigen::VectorXd temp(D);
       coarse.integrate(para, temp);
-      yf.row(n+1) = temp.transpose() + yfine.row(n+1) - ycourse.row(n+1);
-      ycourse.row(n+1) = temp;
+      yf.row(n+1) = temp.transpose() + yfine.row(n+1) - ycoarse.row(n+1);
+      ycoarse.row(n+1) = temp;
     }
   }
   return 0;
@@ -57,8 +80,8 @@ pipelined_parareal(ode_system &sys, time_stepper coarse, time_stepper fine,
   for (int i = 0; i < csteps - 1; i++) { omp_init_lock(&(lock[i])); }
 
   // Initialize coarse/fine temporary structures
-  Eigen::MatrixXd ycourse(csteps, D), yfine(csteps, D), delta_y(csteps, D);
-  ycourse.row(0) = sys.y0; yfine.row(0) = sys.y0; yf.row(0) = sys.y0;
+  Eigen::MatrixXd ycoarse(csteps, D), yfine(csteps, D), delta_y(csteps, D);
+  ycoarse.row(0) = sys.y0; yfine.row(0) = sys.y0; yf.row(0) = sys.y0;
   Eigen::VectorXd tt(csteps);
   for (int k = 0; k < csteps; k++) { tt(k) = sys.t_init + k*coarse.dt; }
 
@@ -80,7 +103,7 @@ pipelined_parareal(ode_system &sys, time_stepper coarse, time_stepper fine,
       temp_sys.t_init = tt(p); temp_sys.t_final = tt(p+1);
       temp_sys.y0 = y_temp;
       coarse.integrate(temp_sys, y_temp);
-      ycourse.row(p+1) = y_temp;
+      ycoarse.row(p+1) = y_temp;
     } // END initial initial solve NOWAIT
 
     for (int k = 0; k < para_its; k++)
@@ -99,7 +122,7 @@ pipelined_parareal(ode_system &sys, time_stepper coarse, time_stepper fine,
         fine.integrate(temp_sys, y_temp);
         omp_set_lock(&(lock[p+1])); // Lock for write
         yfine.row(p+1) = y_temp;
-        delta_y.row(p+1) = yfine.row(p+1) - ycourse.row(p+1);
+        delta_y.row(p+1) = yfine.row(p+1) - ycoarse.row(p+1);
         omp_unset_lock(&(lock[p+1]));
 
         #pragma omp ordered
@@ -110,8 +133,8 @@ pipelined_parareal(ode_system &sys, time_stepper coarse, time_stepper fine,
           coarse.integrate(temp_sys, y_temp); //Predict
           
           omp_set_lock(&(lock[p+1])); //Lock for writes
-          ycourse.row(p+1) = y_temp;
-          yf.row(p+1) = ycourse.row(p+1) + delta_y.row(p+1); //Correct
+          ycoarse.row(p+1) = y_temp;
+          yf.row(p+1) = ycoarse.row(p+1) + delta_y.row(p+1); //Correct
           omp_unset_lock(&(lock[p+1]));
         } // END ordered region
       } // END processor p computation NOWAIT
