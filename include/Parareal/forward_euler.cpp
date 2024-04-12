@@ -2,7 +2,7 @@
 
 /**
  * @brief Performs a forward Euler integration of the ODE system 
- *        untik the final time is reached.
+ *        until the final time is reached.
  * 
  * @param sys The ODE system to solve.
  * @param dt The time step size.
