@@ -1,5 +1,4 @@
 #include "parareal.h"
-
 #include <omp.h>
 
 // Parareal Method.
@@ -11,21 +10,22 @@
  * @param coarse The time stepper for the coarse solution.
  * @param fine The time stepper for the fine solution.
  * @param para_its The number of Parareal iterations.
- * @param yf The matrix to store the solution at the different timestep.
+ * @param y_sol The matrix to store the solution at the different timestep.
  * @return 0 if the algorithm completes successfully.
  */
 inline int 
 parareal(ode_system &sys, time_stepper coarse, time_stepper fine, 
-             int para_its, Eigen::MatrixXd &yf)
+             int para_its, Eigen::MatrixXd &y_sol)
 {
   int D = sys.dimension;                 // Dimension of the ODE system
   int csteps = sys.num_steps(coarse.dt); // Number of coarse steps
 
-  /* Serially compute the coarse solution to sys */
-  coarse.integrate_allt(sys, yf);
+  /* Serially compute the coarse solution to sys, 
+     y_sol will have all the coarse approximation of the system y(i) for i = [0:n] */
+  coarse.integrate_allt(sys, y_sol);
 
   /* Initialize containers for parareal */
-  Eigen::MatrixXd ycoarse = yf;
+  Eigen::MatrixXd ycoarse = y_sol; 
   Eigen::MatrixXd yfine(csteps, D); 
   yfine.row(0) = sys.y0;
 
@@ -41,10 +41,11 @@ parareal(ode_system &sys, time_stepper coarse, time_stepper fine,
       ode_system para = sys;
       para.t_init = sys.t_init + coarse.dt*n;
       para.t_final = sys.t_init + coarse.dt*(n+1);
-      para.y0 = yf.row(n);
+      para.y0 = y_sol.row(n);
 
       /* Solve and update the correction yfine */
       Eigen::VectorXd temp;
+      // integrate the fine solution until the time n+1 
       fine.integrate(para, temp);
       yfine.row(n+1) = temp;
     }
@@ -57,12 +58,12 @@ parareal(ode_system &sys, time_stepper coarse, time_stepper fine,
       ode_system para = sys;
       para.t_init = sys.t_init + coarse.dt*n; 
       para.t_final = sys.t_init + coarse.dt*(n+1);
-      para.y0 = yf.row(n);
+      para.y0 = y_sol.row(n);
 
       /* Correct with parareal iterative scheme */
       Eigen::VectorXd temp(D);
       coarse.integrate(para, temp);
-      yf.row(n+1) = temp.transpose() + yfine.row(n+1) - ycoarse.row(n+1);
+      y_sol.row(n+1) = temp.transpose() + yfine.row(n+1) - ycoarse.row(n+1);
       ycoarse.row(n+1) = temp;
     }
   }
@@ -71,17 +72,25 @@ parareal(ode_system &sys, time_stepper coarse, time_stepper fine,
 
 inline int 
 pipelined_parareal(ode_system &sys, time_stepper coarse, time_stepper fine, 
-             int para_its, Eigen::MatrixXd &yf)
+             int para_its, Eigen::MatrixXd &y_sol)
 {
-  int D = sys.dimension, csteps = sys.num_steps(coarse.dt);
+  int D = sys.dimension;
+  int csteps = sys.num_steps(coarse.dt);
 
   // Initialize omp locks, one for each processor.
   omp_lock_t lock[csteps];
+  // why to cstep -1 ?
   for (int i = 0; i < csteps - 1; i++) { omp_init_lock(&(lock[i])); }
 
   // Initialize coarse/fine temporary structures
-  Eigen::MatrixXd ycoarse(csteps, D), yfine(csteps, D), delta_y(csteps, D);
-  ycoarse.row(0) = sys.y0; yfine.row(0) = sys.y0; yf.row(0) = sys.y0;
+  Eigen::MatrixXd ycoarse(csteps, D); ycoarse.row(0) = sys.y0;
+  Eigen::MatrixXd yfine  (csteps, D); yfine.row(0) = sys.y0;   
+  Eigen::MatrixXd delta_y(csteps, D); y_sol.row(0) = sys.y0;  
+  
+
+  ycoarse.row(0) = sys.y0; 
+  yfine.row(0) = sys.y0;   
+  y_sol.row(0) = sys.y0;  
   Eigen::VectorXd tt(csteps);
   for (int k = 0; k < csteps; k++) { tt(k) = sys.t_init + k*coarse.dt; }
 
@@ -98,7 +107,7 @@ pipelined_parareal(ode_system &sys, time_stepper coarse, time_stepper fine,
       {
         temp_sys.t_init = 0; temp_sys.t_final = tt(p);
         coarse.integrate(temp_sys, y_temp);
-        yf.row(p) = y_temp;
+        y_sol.row(p) = y_temp;
       }
       temp_sys.t_init = tt(p); temp_sys.t_final = tt(p+1);
       temp_sys.y0 = y_temp;
@@ -117,7 +126,7 @@ pipelined_parareal(ode_system &sys, time_stepper coarse, time_stepper fine,
 
         // Compute fine solution and corrector term for pth node.
         omp_set_lock(&(lock[p])); // Lock for initialization read
-        temp_sys.y0 = yf.row(p);
+        temp_sys.y0 = y_sol.row(p);
         omp_unset_lock(&(lock[p]));
         fine.integrate(temp_sys, y_temp);
         omp_set_lock(&(lock[p+1])); // Lock for write
@@ -128,13 +137,13 @@ pipelined_parareal(ode_system &sys, time_stepper coarse, time_stepper fine,
         #pragma omp ordered
         { // BEGIN ordered region
           omp_set_lock(&(lock[p])); // Lock for reads
-          temp_sys.y0 = yf.row(p);
+          temp_sys.y0 = y_sol.row(p);
           omp_unset_lock(&(lock[p])); // Conservative lock, not sure if I need it.
           coarse.integrate(temp_sys, y_temp); //Predict
           
           omp_set_lock(&(lock[p+1])); //Lock for writes
           ycoarse.row(p+1) = y_temp;
-          yf.row(p+1) = ycoarse.row(p+1) + delta_y.row(p+1); //Correct
+          y_sol.row(p+1) = ycoarse.row(p+1) + delta_y.row(p+1); //Correct
           omp_unset_lock(&(lock[p+1]));
         } // END ordered region
       } // END processor p computation NOWAIT
