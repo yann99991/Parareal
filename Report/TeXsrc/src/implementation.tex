@@ -35,7 +35,7 @@ pseudocode. A quick description is as follows:
     \Require $y_0$ and coarse and fine solvers $\coarse$, $\fine$.
     \State $y_c \gets \coarse(t_f, t_0, y_0)$.\Comment{Coarsely approximate
       solution}
-    \State $y \gets y_c$.
+    \State $y_{sol} \gets y_c$.
     \While{$\textrm{iter} < \textrm{max\_iter}\ \&\&$ not converged}
       \State \#pragma omp parallel for
       \For{$n = 0 \to P$}

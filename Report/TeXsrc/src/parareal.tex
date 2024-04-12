@@ -20,11 +20,12 @@ pose the new ODE:
 \[
   \begin{cases}
     u'_n = f(u_n), & t \in [t_n, t_{n+1}] \\
-    u(t_n) = U_n
+    u_n(t_n) = U_n
   \end{cases}
 \]
-where $U_n$ is such that $U_n - u_{n-1}(t_n, U_{n-1}) = 0$, i.e. the initial
-condition satisfies the solution to the previous time slice. The conditions on
+where $U_n$ is such that: $$U_n = u_{n-1}(t_n, U_{n-1}) $$
+, i.e. the initial
+condition for a particular timestep satisfies the solution to the previous time slice. The conditions on
 $U_i$ form a nonlinear system $F(U) = 0$, which we can approximate using
 Newton-Raphson, so we recieve the iteration $U^{k+1} = U^k -
 J_F^{-1}(U^k)F(U^k)$. As it turns out, as seen in Gander and Vandewalle
